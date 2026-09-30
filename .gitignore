@@ -1,0 +1,15 @@
+# Hasil kompilasi C
+*.o
+*.out
+backend/mint-rt-backend
+
+# Dependensi dan build frontend
+node_modules/
+dist/
+
+# Log dan file sementara
+*.log
+*.tmp
+
+# Editor
+.vscode/
