@@ -5,6 +5,7 @@
 
 #include "process.h"
 #include "monitor.h"
+#include "scheduler.h"
 
 #define MAX_PROCS 2048
 #define SHOW_TOP  10
@@ -24,9 +25,43 @@ static int cmp_cpu_desc(const void *a, const void *b)
     return 0;
 }
 
+/* Demo EDF: simulasi tingkat aplikasi, BUKAN scheduler kernel Linux. */
+static void edf_demo(void)
+{
+    static Scheduler s;
+    sched_init(&s);
+    sched_add_task(&s, 0, "Task A", 0, 20, 100);
+    sched_add_task(&s, 0, "Task B", 0, 10, 50);
+    sched_add_task(&s, 0, "Task C", 0, 15, 80);
+    sched_start(&s);
+    sched_run_until_idle(&s, 1000);
+
+    printf("=== EDF DEMO (simulasi tingkat aplikasi, jam simulasi) ===\n");
+    printf("%-8s %8s %5s %9s %7s  %s\n",
+           "TASK", "ARRIVAL", "EXEC", "DEADLINE", "FINISH", "HASIL");
+    for (int i = 0; i < s.task_count; i++) {
+        const SchedTask *t = &s.tasks[i];
+        printf("%-8s %8ld %5ld %9ld %7ld  %s\n",
+               t->name, t->arrival_ms, t->exec_ms, t->deadline_ms,
+               t->finish_ms, t->missed ? "MISSED" : "MET");
+    }
+
+    printf("\nTimeline (ms simulasi):\n");
+    for (int i = 0; i < s.slice_count; i++)
+        printf("  %4ld - %4ld  %s\n", s.slices[i].start_ms,
+               s.slices[i].end_ms, s.tasks[s.slices[i].task_id].name);
+
+    printf("\nMet: %d  Missed: %d\n", s.met, s.missed);
+}
+
 int main(int argc, char *argv[])
 {
     const char *filter = (argc > 1) ? argv[1] : NULL;
+
+        if (argc > 1 && strcmp(argv[1], "--edf-demo") == 0) {
+        edf_demo();
+        return 0;
+    }
 
     /* Pembacaan pertama */
     CpuSample s1, s2;
