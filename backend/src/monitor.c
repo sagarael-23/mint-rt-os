@@ -5,10 +5,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CPU_WARN_PCT   90.0
-#define MEM_WARN_PCT   90.0
-#define CLEAR_MARGIN   10.0
-
 int monitor_read_cpu_sample(CpuSample *out)
 {
     FILE *f = fopen("/proc/stat", "r");
@@ -95,6 +91,35 @@ void monitor_apply_process_cpu(Process *cur, int ncur,
                                const Process *prev, int nprev,
                                unsigned long long total_delta)
 {
+    for (int i = 0; i < ncur; i++) {
+        cur[i].cpu_usage = 0.0;
+        if (total_delta == 0)
+            continue;
+
+        for (int j = 0; j < nprev; j++) {
+            /* PID sama DAN waktu mulai sama = proses yang sama. */
+            if (prev[j].pid == cur[i].pid &&
+                prev[j].start_ticks == cur[i].start_ticks) {
+                unsigned long long a = cur[i].utime + cur[i].stime;
+                unsigned long long b = prev[j].utime + prev[j].stime;
+                if (a >= b) {
+                    double pct = (double)(a - b) * 100.0 / (double)total_delta;
+                    cur[i].cpu_usage = (pct > 100.0) ? 100.0 : pct;
+                }
+                break;
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pencatatan kejadian (Phase 6)                                       */
+/* ------------------------------------------------------------------ */
+
+#define CPU_WARN_PCT   90.0
+#define MEM_WARN_PCT   90.0
+#define CLEAR_MARGIN   10.0
+
 static int find_same(const Process *list, int n, const Process *p)
 {
     for (int i = 0; i < n; i++)
