@@ -36,4 +36,12 @@ void monitor_apply_process_cpu(Process *cur, int ncur,
                                const Process *prev, int nprev,
                                unsigned long long total_delta);
 
+/* Bandingkan dua daftar proses; catat proses muncul, hilang, dan perubahan
+   state bermakna (ZOMBIE/STOPPED). Jika nprev <= 0, hanya catat ringkasan awal. */
+void monitor_log_changes(const Process *prev, int nprev,
+                         const Process *cur, int ncur);
+
+/* Catat peringatan saat CPU/memori melewati ambang, dan saat kembali normal. */
+void monitor_log_thresholds(const SystemStats *st);                               
+
 #endif

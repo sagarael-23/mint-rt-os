@@ -1,5 +1,6 @@
 #include "scheduler.h"
 #include "deadline.h"
+#include "logger.h"
 
 #include <string.h>
 
@@ -20,6 +21,14 @@ static int all_completed(const Scheduler *s)
         if (s->tasks[i].state != TASK_COMPLETED)
             return 0;
     return 1;
+}
+
+static void mark_missed(Scheduler *s, SchedTask *t)
+{
+    t->missed = 1;
+    s->missed++;
+    log_msg(LOG_WARN, LOG_DEADLINE, "%s missed deadline (%ld ms) at t=%ld ms",
+            t->name, t->deadline_ms, s->now_ms);
 }
 
 void sched_init(Scheduler *s)
@@ -52,8 +61,17 @@ int sched_add_task(Scheduler *s, int pid, const char *name,
     return s->task_count++;
 }
 
-void sched_start(Scheduler *s) { s->active = 1; }
-void sched_stop(Scheduler *s)  { s->active = 0; }
+void sched_start(Scheduler *s)
+{
+    s->active = 1;
+    log_msg(LOG_INFO, LOG_SCHEDULER, "EDF scheduler started");
+}
+
+void sched_stop(Scheduler *s)
+{
+    s->active = 0;
+    log_msg(LOG_INFO, LOG_SCHEDULER, "EDF scheduler stopped");
+}
 
 int sched_pick_edf(const Scheduler *s)
 {
@@ -115,10 +133,8 @@ void sched_tick(Scheduler *s)
         if (t->state == TASK_WAITING && s->now_ms >= t->arrival_ms)
             t->state = TASK_READY;
         if (t->state != TASK_WAITING && !t->missed &&
-            deadline_time_left(t->deadline_ms, s->now_ms) <= 0) {
-            t->missed = 1;
-            s->missed++;
-        }
+            deadline_time_left(t->deadline_ms, s->now_ms) <= 0)
+            mark_missed(s, t);
     }
 
     /* 2. Pilih task EDF. */
@@ -129,12 +145,23 @@ void sched_tick(Scheduler *s)
         if (s->tasks[i].state == TASK_RUNNING)
             s->tasks[i].state = TASK_READY;
 
+    int prev_running = s->running_id;
     s->running_id = -1;
 
     if (pick >= 0) {
         SchedTask *t = &s->tasks[pick];
         t->state = TASK_RUNNING;
         s->running_id = pick;
+
+        if (pick != prev_running) {
+            if (prev_running >= 0)
+                log_msg(LOG_INFO, LOG_SCHEDULER, "preempt: %s -> %s at t=%ld ms",
+                        s->tasks[prev_running].name, t->name, s->now_ms);
+            else
+                log_msg(LOG_INFO, LOG_SCHEDULER,
+                        "dispatch %s at t=%ld ms (deadline %ld ms)",
+                        t->name, s->now_ms, t->deadline_ms);
+        }
 
         /* Catat potongan eksekusi; gabungkan dengan potongan sebelumnya
            jika task yang sama berjalan tanpa jeda. */
@@ -153,18 +180,17 @@ void sched_tick(Scheduler *s)
 
         t->remaining_ms--;
         if (t->remaining_ms == 0) {
-            t->state     = TASK_COMPLETED;
-            t->finish_ms = s->now_ms + 1;
+            t->state      = TASK_COMPLETED;
+            t->finish_ms  = s->now_ms + 1;
             s->running_id = -1;
 
-            if (!t->missed) {
-                if (deadline_is_missed(t->deadline_ms, t->finish_ms)) {
-                    t->missed = 1;
-                    s->missed++;
-                } else {
-                    s->met++;
-                }
-            }
+            if (!t->missed && deadline_is_missed(t->deadline_ms, t->finish_ms))
+                mark_missed(s, t);
+            if (!t->missed)
+                s->met++;
+
+            log_msg(LOG_INFO, LOG_SCHEDULER, "%s completed at t=%ld ms (%s)",
+                    t->name, t->finish_ms, t->missed ? "MISSED" : "MET");
         }
     }
 

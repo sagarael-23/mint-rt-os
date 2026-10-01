@@ -6,6 +6,7 @@
 #include "process.h"
 #include "monitor.h"
 #include "scheduler.h"
+#include "logger.h"
 
 #define MAX_PROCS 2048
 #define SHOW_TOP  10
@@ -29,6 +30,10 @@ static int cmp_cpu_desc(const void *a, const void *b)
 static void edf_demo(void)
 {
     static Scheduler s;
+
+    log_reset();
+    log_set_echo(1);
+
     sched_init(&s);
     sched_add_task(&s, 0, "Task A", 0, 20, 100);
     sched_add_task(&s, 0, "Task B", 0, 10, 50);
@@ -36,7 +41,7 @@ static void edf_demo(void)
     sched_start(&s);
     sched_run_until_idle(&s, 1000);
 
-    printf("=== EDF DEMO (simulasi tingkat aplikasi, jam simulasi) ===\n");
+    printf("\n=== EDF DEMO (simulasi tingkat aplikasi, jam simulasi) ===\n");
     printf("%-8s %8s %5s %9s %7s  %s\n",
            "TASK", "ARRIVAL", "EXEC", "DEADLINE", "FINISH", "HASIL");
     for (int i = 0; i < s.task_count; i++) {
@@ -54,14 +59,83 @@ static void edf_demo(void)
     printf("\nMet: %d  Missed: %d\n", s.met, s.missed);
 }
 
+/* Pantau proses dan sistem tiap 1 detik; catat kejadian ke log. */
+static void watch_mode(int seconds)
+{
+    Process *prev = prev_list;
+    Process *cur  = cur_list;
+    CpuSample s_prev, s_cur;
+    SystemStats st;
+
+    if (log_init("mint-rt-backend.log") != 0)
+        fprintf(stderr, "Peringatan: file log tidak bisa dibuka, log hanya di layar.\n");
+    log_set_echo(1);
+    log_msg(LOG_INFO, LOG_SYSTEM, "backend started (watch mode, %d s)", seconds);
+
+    if (monitor_read_cpu_sample(&s_prev) != 0) {
+        log_msg(LOG_ERROR, LOG_SYSTEM, "cannot read /proc/stat");
+        log_close();
+        return;
+    }
+    int nprev = process_scan(prev, MAX_PROCS);
+    if (nprev < 0) {
+        log_msg(LOG_ERROR, LOG_PROCESS, "cannot scan /proc");
+        log_close();
+        return;
+    }
+    monitor_log_changes(NULL, 0, prev, nprev);
+
+    for (int i = 0; i < seconds; i++) {
+        sleep(1);
+
+        if (monitor_read_cpu_sample(&s_cur) != 0) {
+            log_msg(LOG_ERROR, LOG_SYSTEM, "cannot read /proc/stat");
+            break;
+        }
+        int ncur = process_scan(cur, MAX_PROCS);
+        if (ncur < 0) {
+            log_msg(LOG_ERROR, LOG_PROCESS, "cannot scan /proc");
+            break;
+        }
+
+        unsigned long long dt =
+            (s_cur.total > s_prev.total) ? s_cur.total - s_prev.total : 0;
+        monitor_apply_process_cpu(cur, ncur, prev, nprev, dt);
+        monitor_log_changes(prev, nprev, cur, ncur);
+
+        if (monitor_read_system(&st) == 0) {
+            st.cpu_percent   = monitor_cpu_percent(&s_prev, &s_cur);
+            st.process_count = ncur;
+            monitor_log_thresholds(&st);
+        }
+
+        /* Pembacaan sekarang menjadi pembacaan sebelumnya. */
+        Process *tmp = prev;
+        prev = cur;
+        cur  = tmp;
+        nprev  = ncur;
+        s_prev = s_cur;
+    }
+
+    log_msg(LOG_INFO, LOG_SYSTEM, "backend stopped");
+    log_close();
+}
+
 int main(int argc, char *argv[])
 {
-    const char *filter = (argc > 1) ? argv[1] : NULL;
-
-        if (argc > 1 && strcmp(argv[1], "--edf-demo") == 0) {
+    if (argc > 1 && strcmp(argv[1], "--edf-demo") == 0) {
         edf_demo();
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "--watch") == 0) {
+        int secs = (argc > 2) ? atoi(argv[2]) : 15;
+        if (secs < 1)    secs = 1;
+        if (secs > 3600) secs = 3600;
+        watch_mode(secs);
+        return 0;
+    }
+
+    const char *filter = (argc > 1) ? argv[1] : NULL;
 
     /* Pembacaan pertama */
     CpuSample s1, s2;
