@@ -13,3 +13,4 @@ dist/
 
 # Editor
 .vscode/
+backend/test_scheduler
