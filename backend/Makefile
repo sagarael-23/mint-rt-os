@@ -1,14 +1,17 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=gnu11 -O2
 TARGET  = mint-rt-backend
-SRC     = src/main.c src/process.c src/monitor.c src/scheduler.c src/deadline.c src/logger.c
-HEADERS = src/process.h src/monitor.h src/scheduler.h src/deadline.h src/logger.h
+SRC     = src/main.c src/process.c src/monitor.c src/scheduler.c src/deadline.c src/logger.c src/utils.c src/api.c
+HEADERS = src/process.h src/monitor.h src/scheduler.h src/deadline.h src/logger.h src/utils.h src/api.h
 
 TEST_SCHED     = test_scheduler
 TEST_SCHED_SRC = tests/test_scheduler.c src/scheduler.c src/deadline.c src/logger.c
 
 TEST_LOG       = test_logger
 TEST_LOG_SRC   = tests/test_logger.c src/logger.c src/scheduler.c src/deadline.c
+
+TEST_UTILS     = test_utils
+TEST_UTILS_SRC = tests/test_utils.c src/utils.c
 
 all: $(TARGET)
 
@@ -21,11 +24,15 @@ $(TEST_SCHED): $(TEST_SCHED_SRC) $(HEADERS)
 $(TEST_LOG): $(TEST_LOG_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) -o $(TEST_LOG) $(TEST_LOG_SRC)
 
-test: $(TEST_SCHED) $(TEST_LOG)
+$(TEST_UTILS): $(TEST_UTILS_SRC) $(HEADERS)
+	$(CC) $(CFLAGS) -o $(TEST_UTILS) $(TEST_UTILS_SRC)
+
+test: $(TEST_SCHED) $(TEST_LOG) $(TEST_UTILS)
 	./$(TEST_SCHED)
 	./$(TEST_LOG)
+	./$(TEST_UTILS)
 
 clean:
-	rm -f $(TARGET) $(TEST_SCHED) $(TEST_LOG)
+	rm -f $(TARGET) $(TEST_SCHED) $(TEST_LOG) $(TEST_UTILS)
 
 .PHONY: all test clean

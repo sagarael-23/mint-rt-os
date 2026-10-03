@@ -7,6 +7,7 @@
 #include "monitor.h"
 #include "scheduler.h"
 #include "logger.h"
+#include "api.h"
 
 #define MAX_PROCS 2048
 #define SHOW_TOP  10
@@ -133,6 +134,22 @@ int main(int argc, char *argv[])
         if (secs > 3600) secs = 3600;
         watch_mode(secs);
         return 0;
+    }
+
+        if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
+        int port = (argc > 2) ? atoi(argv[2]) : API_DEFAULT_PORT;
+        if (port < 1024 || port > 65535) {
+            fprintf(stderr, "Port harus antara 1024 dan 65535\n");
+            return 1;
+        }
+        if (log_init("mint-rt-backend.log") != 0)
+            fprintf(stderr, "Peringatan: file log tidak bisa dibuka, log hanya di layar.\n");
+        log_set_echo(1);
+        log_msg(LOG_INFO, LOG_SYSTEM, "backend started (API mode)");
+
+        int rc = api_serve(port);
+        log_close();
+        return rc == 0 ? 0 : 1;
     }
 
     const char *filter = (argc > 1) ? argv[1] : NULL;
