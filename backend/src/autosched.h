@@ -34,4 +34,7 @@ long autosched_run(Scheduler *s, const AutoJob *jobs, int n);
    ditaruh di belakang. Return jumlah entri. */
 int autosched_order(const Scheduler *s, int *out, int max);
 
+/* Sama dengan autosched_run, tetapi panjang siklus bisa diatur (dipakai setelan cycleMs).
+   Deadline dibatasi cycle_ms, dan batas jam simulasi adalah 10 * cycle_ms. */
+long autosched_run_cycle(Scheduler *s, const AutoJob *jobs, int n, long cycle_ms);
 #endif

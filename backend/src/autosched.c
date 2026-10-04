@@ -60,25 +60,32 @@ long autosched_deadline(long exec_ms, int n_jobs, long cycle_ms)
     return (d > cap) ? cap : d;
 }
 
-long autosched_run(Scheduler *s, const AutoJob *jobs, int n)
+long autosched_run_cycle(Scheduler *s, const AutoJob *jobs, int n, long cycle_ms)
 {
     if (n > SCHED_MAX_TASKS)
         n = SCHED_MAX_TASKS;
+    if (cycle_ms < 1)
+        cycle_ms = AUTO_CYCLE_MS;
 
     log_set_muted(1);
 
     sched_init(s);
     long demand = 0;
     for (int i = 0; i < n; i++) {
-        long d = autosched_deadline(jobs[i].exec_ms, n, AUTO_CYCLE_MS);
+        long d = autosched_deadline(jobs[i].exec_ms, n, cycle_ms);
         if (sched_add_task(s, jobs[i].pid, jobs[i].name, 0, jobs[i].exec_ms, d) >= 0)
             demand += jobs[i].exec_ms;
     }
     sched_start(s);
-    sched_run_until_idle(s, AUTO_RUN_LIMIT_MS);
+    sched_run_until_idle(s, cycle_ms * 10);
 
     log_set_muted(0);
     return demand;
+}
+
+long autosched_run(Scheduler *s, const AutoJob *jobs, int n)
+{
+    return autosched_run_cycle(s, jobs, n, AUTO_CYCLE_MS);
 }
 
 int autosched_order(const Scheduler *s, int *out, int max)

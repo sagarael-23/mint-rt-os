@@ -1,6 +1,7 @@
 #include "api.h"
 
 #include "autosched.h"
+#include "history.h"
 #include "logger.h"
 #include "monitor.h"
 #include "process.h"
@@ -21,14 +22,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_PROCS   2048
-#define REQ_MAX     4096
-#define LOG_PAGE    200
-#define LOG_INITIAL 100
-#define SAMPLE_MS   1000
+#define MAX_PROCS        2048
+#define REQ_MAX          4096
+#define LOG_PAGE         200
+#define LOG_INITIAL      100
+#define CYCLE_DEFAULT_MS 1000
+#define CYCLE_MIN_MS     500
+#define CYCLE_MAX_MS     5000
 
 /* ------------------------------------------------------------------ */
-/* Data terbaru (diperbarui tiap 1 detik, dibaca oleh handler)         */
+/* Data terbaru (diperbarui tiap siklus, dibaca oleh handler)          */
 /* ------------------------------------------------------------------ */
 
 static Process     buf_a[MAX_PROCS];
@@ -39,16 +42,21 @@ static int         n_latest = 0;
 static SystemStats sys_stats;
 static CpuSample   last_cpu;
 
+/* Panjang siklus sampling dan simulasi (setelan cycleMs). */
+static long        g_cycle_ms = CYCLE_DEFAULT_MS;
+static int         reset_tick = 0;
+
 /* Scheduler EDF otomatis (simulasi): jadwal dari siklus terakhir. */
 static Scheduler          g_sched;
 static AutoJob            jobs_buf[MAX_PROCS];
 static int                cycle_order[SCHED_MAX_TASKS];
-static int                cycle_n          = 0;
-static long               cycle_demand_ms  = 0;
-static unsigned long      sim_cycle        = 0;
-static unsigned long long total_met        = 0;
-static unsigned long long total_missed     = 0;
-static int                sim_running      = 1;
+static int                cycle_n           = 0;
+static int                cycle_active      = 0;   /* proses yang memakai CPU */
+static long               cycle_demand_ms   = 0;
+static unsigned long      sim_cycle         = 0;
+static unsigned long long total_met         = 0;
+static unsigned long long total_missed      = 0;
+static int                sim_running       = 1;
 static int                prev_cycle_missed = 0;
 
 static volatile sig_atomic_t g_stop = 0;
@@ -87,6 +95,7 @@ static void sim_clear(void)
 {
     sched_init(&g_sched);
     cycle_n = 0;
+    cycle_active = 0;
     cycle_demand_ms = 0;
 }
 
@@ -97,7 +106,8 @@ static void sim_update(const Process *cur, int ncur, const Process *prev, int np
         return;
 
     int nj = autosched_collect(cur, ncur, prev, nprev, jobs_buf, MAX_PROCS);
-    cycle_demand_ms = autosched_run(&g_sched, jobs_buf, nj);
+    cycle_active = nj;
+    cycle_demand_ms = autosched_run_cycle(&g_sched, jobs_buf, nj, g_cycle_ms);
     cycle_n = autosched_order(&g_sched, cycle_order, SCHED_MAX_TASKS);
     sim_cycle++;
     total_met    += (unsigned long long)g_sched.met;
@@ -107,8 +117,8 @@ static void sim_update(const Process *cur, int ncur, const Process *prev, int np
     int missed = (g_sched.missed > 0);
     if (missed && !prev_cycle_missed)
         log_msg(LOG_WARN, LOG_DEADLINE,
-                "EDF simulation: %d job(s) missed deadline (cycle #%lu, CPU demand %ld ms in a %d ms cycle)",
-                g_sched.missed, sim_cycle, cycle_demand_ms, AUTO_CYCLE_MS);
+                "EDF simulation: %d job(s) missed deadline (cycle #%lu, CPU demand %ld ms in a %ld ms cycle)",
+                g_sched.missed, sim_cycle, cycle_demand_ms, g_cycle_ms);
     else if (!missed && prev_cycle_missed)
         log_msg(LOG_INFO, LOG_SCHEDULER,
                 "EDF simulation: all deadlines met again (cycle #%lu)", sim_cycle);
@@ -160,6 +170,18 @@ static void state_update(void)
         st.process_count = n;
         monitor_log_thresholds(&st);
         sys_stats = st;
+
+        HistorySample hs;
+        memset(&hs, 0, sizeof(hs));
+        hs.timestamp     = time(NULL);
+        hs.cpu_percent   = st.cpu_percent;
+        hs.mem_percent   = st.mem_percent;
+        hs.process_count = n;
+        hs.jobs          = g_sched.task_count;
+        hs.met           = g_sched.met;
+        hs.missed        = g_sched.missed;
+        hs.utilization   = cycle_demand_ms * 100.0 / (double)g_cycle_ms;
+        history_add(&hs);
     }
 
     /* Hasil baru menjadi 'latest'; yang lama dipakai ulang sebagai 'work'. */
@@ -282,6 +304,82 @@ static int handle_logs(const char *query, StrBuf *b)
 }
 
 /* ------------------------------------------------------------------ */
+/* Monitoring dan settings                                             */
+/* ------------------------------------------------------------------ */
+
+static int handle_monitoring(StrBuf *b)
+{
+    static HistorySample hs[HISTORY_CAPACITY];
+    int n = history_get_all(hs, HISTORY_CAPACITY);
+    unsigned long long met = 0, missed = 0;
+    int rc = 0;
+
+    for (int i = 0; i < n; i++) {
+        met    += (unsigned long long)hs[i].met;
+        missed += (unsigned long long)hs[i].missed;
+    }
+
+    rc |= sb_appendf(b,
+        "{\"intervalMs\":%ld,\"capacity\":%d,\"count\":%d,"
+        "\"current\":{\"cpuPercent\":%.1f,\"memPercent\":%.1f,\"processCount\":%d,"
+        "\"activeProcesses\":%d,\"utilizationPercent\":%.1f",
+        g_cycle_ms, HISTORY_CAPACITY, n,
+        sys_stats.cpu_percent, sys_stats.mem_percent, sys_stats.process_count,
+        cycle_active, cycle_demand_ms * 100.0 / (double)g_cycle_ms);
+
+    if (met + missed > 0)
+        rc |= sb_appendf(b, ",\"deadlinePerformancePercent\":%.1f",
+                         (double)met * 100.0 / (double)(met + missed));
+    else
+        rc |= sb_appendf(b, ",\"deadlinePerformancePercent\":null");
+
+    rc |= sb_appendf(b, ",\"windowMet\":%llu,\"windowMissed\":%llu},\"samples\":[",
+                     met, missed);
+
+    for (int i = 0; i < n; i++) {
+        char tbuf[16];
+        history_format_time(&hs[i], tbuf, sizeof(tbuf));
+        if (i > 0)
+            rc |= sb_appendf(b, ",");
+        rc |= sb_appendf(b,
+            "{\"time\":\"%s\",\"cpu\":%.1f,\"mem\":%.1f,\"processes\":%d,"
+            "\"jobs\":%d,\"met\":%d,\"missed\":%d,\"utilization\":%.1f}",
+            tbuf, hs[i].cpu_percent, hs[i].mem_percent, hs[i].process_count,
+            hs[i].jobs, hs[i].met, hs[i].missed, hs[i].utilization);
+    }
+    rc |= sb_appendf(b, "]}");
+    return rc == 0 ? 200 : 500;
+}
+
+static int handle_settings(StrBuf *b)
+{
+    int rc = sb_appendf(b,
+        "{\"algorithm\":\"EDF\",\"cycleMs\":%ld,\"cycleMinMs\":%d,\"cycleMaxMs\":%d,"
+        "\"simulatedCores\":1,\"schedulerStatus\":\"%s\",\"historyCapacity\":%d}",
+        g_cycle_ms, CYCLE_MIN_MS, CYCLE_MAX_MS,
+        sim_running ? "RUNNING" : "STOPPED", HISTORY_CAPACITY);
+    return rc == 0 ? 200 : 500;
+}
+
+static int handle_settings_set(const char *query, StrBuf *b)
+{
+    unsigned long v;
+
+    if (query_get_ulong(query, "cycleMs", &v) != 0)
+        return json_err(b, 400, "no valid setting (supported: cycleMs)");
+    if (v < (unsigned long)CYCLE_MIN_MS || v > (unsigned long)CYCLE_MAX_MS)
+        return json_err(b, 400, "cycleMs must be between 500 and 5000");
+
+    if ((long)v != g_cycle_ms) {
+        g_cycle_ms = (long)v;
+        log_msg(LOG_INFO, LOG_SYSTEM, "setting changed: cycleMs = %ld", g_cycle_ms);
+        state_update();          /* ambil baseline baru segera */
+        reset_tick = 1;          /* loop utama menjadwalkan ulang siklus berikutnya */
+    }
+    return handle_settings(b);
+}
+
+/* ------------------------------------------------------------------ */
 /* Scheduler                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -305,12 +403,12 @@ static int handle_scheduler(StrBuf *b)
 
     rc |= sb_appendf(b,
         "{\"simulation\":true,\"algorithm\":\"EDF\",\"status\":\"%s\","
-        "\"cycle\":%lu,\"cycleMs\":%d,\"simulatedCores\":1,"
+        "\"cycle\":%lu,\"cycleMs\":%ld,\"simulatedCores\":1,"
         "\"jobCount\":%d,\"demandMs\":%ld,\"utilizationPercent\":%.1f,"
         "\"met\":%d,\"missed\":%d,\"totalMet\":%llu,\"totalMissed\":%llu",
-        sim_running ? "RUNNING" : "STOPPED", sim_cycle, AUTO_CYCLE_MS,
+        sim_running ? "RUNNING" : "STOPPED", sim_cycle, g_cycle_ms,
         s->task_count, cycle_demand_ms,
-        cycle_demand_ms * 100.0 / AUTO_CYCLE_MS,
+        cycle_demand_ms * 100.0 / (double)g_cycle_ms,
         s->met, s->missed, total_met, total_missed);
 
     /* "Current" = job pertama yang di-dispatch EDF pada siklus ini, "next" = kedua. */
@@ -389,6 +487,15 @@ static int route(const char *method, const char *path, const char *query, StrBuf
     int is_get  = (strcmp(method, "GET") == 0);
     int is_post = (strcmp(method, "POST") == 0);
 
+    /* Settings: GET membaca, POST mengubah. */
+    if (strcmp(path, "/api/settings") == 0) {
+        if (is_post)
+            return handle_settings_set(query, body);
+        if (is_get)
+            return handle_settings(body);
+        return json_err(body, 405, "method not allowed");
+    }
+
     /* Aksi scheduler: hanya POST. */
     if (strncmp(path, "/api/scheduler/", 15) == 0) {
         if (!is_post)
@@ -417,6 +524,8 @@ static int route(const char *method, const char *path, const char *query, StrBuf
         return handle_logs(query, body);
     if (strcmp(path, "/api/scheduler") == 0)
         return handle_scheduler(body);
+    if (strcmp(path, "/api/monitoring") == 0)
+        return handle_monitoring(body);
 
     return json_err(body, 404, "not found");
 }
@@ -619,12 +728,13 @@ int api_serve(int port)
     }
 
     sim_clear();
+    history_reset();
 
     log_msg(LOG_INFO, LOG_SYSTEM, "API listening on http://127.0.0.1:%d", port);
     log_msg(LOG_INFO, LOG_SCHEDULER,
             "EDF scheduler started (automatic mode: jobs built from real process CPU usage)");
 
-    long long next_tick = now_ms() + SAMPLE_MS;
+    long long next_tick = now_ms() + g_cycle_ms;
     while (!g_stop) {
         long long wait = next_tick - now_ms();
         if (wait < 0)
@@ -645,11 +755,16 @@ int api_serve(int port)
             }
         }
 
+        if (reset_tick) {                    /* cycleMs baru saja diubah */
+            next_tick = now_ms() + g_cycle_ms;
+            reset_tick = 0;
+        }
+
         if (now_ms() >= next_tick) {
             state_update();
-            next_tick += SAMPLE_MS;
+            next_tick += g_cycle_ms;
             if (next_tick < now_ms())        /* tertinggal: jangan mengejar */
-                next_tick = now_ms() + SAMPLE_MS;
+                next_tick = now_ms() + g_cycle_ms;
         }
     }
 
