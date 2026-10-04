@@ -192,6 +192,37 @@ static void state_update(void)
     last_cpu = cs;
 }
 
+/* Ambil baseline baru TANPA mencatat sampel, supaya siklus berikutnya tepat
+   sepanjang cycleMs dan tidak ada sampel berjendela pendek yang menyesatkan. */
+static void state_rebaseline(void)
+{
+    CpuSample cs;
+    if (monitor_read_cpu_sample(&cs) != 0)
+        return;
+    int n = process_scan(work, MAX_PROCS);
+    if (n < 0)
+        return;
+
+    /* Pertahankan CPU% terakhir agar tampilan tidak melonjak. */
+    for (int i = 0; i < n; i++) {
+        work[i].cpu_usage = 0.0;
+        for (int j = 0; j < n_latest; j++) {
+            if (latest[j].pid == work[i].pid &&
+                latest[j].start_ticks == work[i].start_ticks) {
+                work[i].cpu_usage = latest[j].cpu_usage;
+                break;
+            }
+        }
+    }
+    monitor_log_changes(latest, n_latest, work, n);
+
+    Process *tmp = latest;
+    latest = work;
+    work   = tmp;
+    n_latest = n;
+    last_cpu = cs;
+}
+
 /* ------------------------------------------------------------------ */
 /* Pembuat JSON                                                        */
 /* ------------------------------------------------------------------ */
@@ -373,7 +404,7 @@ static int handle_settings_set(const char *query, StrBuf *b)
     if ((long)v != g_cycle_ms) {
         g_cycle_ms = (long)v;
         log_msg(LOG_INFO, LOG_SYSTEM, "setting changed: cycleMs = %ld", g_cycle_ms);
-        state_update();          /* ambil baseline baru segera */
+        state_rebaseline();          /* ambil baseline baru segera */
         reset_tick = 1;          /* loop utama menjadwalkan ulang siklus berikutnya */
     }
     return handle_settings(b);
