@@ -1,5 +1,6 @@
 #include "api.h"
 
+#include "autosched.h"
 #include "logger.h"
 #include "monitor.h"
 #include "process.h"
@@ -20,15 +21,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_PROCS      2048
-#define REQ_MAX        4096
-#define LOG_PAGE       200
-#define LOG_INITIAL    100
-#define SAMPLE_MS      1000
-#define MAX_SIM_MS     3600000UL   /* batas execMs/deadlineMs: 1 jam simulasi */
-#define MAX_ADVANCE_MS 5000        /* maksimum tick simulasi per pembaruan   */
-#define MAX_PID_VALUE  4194304UL
-#define TIMELINE_MAX   100
+#define MAX_PROCS   2048
+#define REQ_MAX     4096
+#define LOG_PAGE    200
+#define LOG_INITIAL 100
+#define SAMPLE_MS   1000
 
 /* ------------------------------------------------------------------ */
 /* Data terbaru (diperbarui tiap 1 detik, dibaca oleh handler)         */
@@ -42,8 +39,17 @@ static int         n_latest = 0;
 static SystemStats sys_stats;
 static CpuSample   last_cpu;
 
-static Scheduler   g_sched;          /* scheduler EDF simulasi */
-static long long   sched_last_ms = 0;
+/* Scheduler EDF otomatis (simulasi): jadwal dari siklus terakhir. */
+static Scheduler          g_sched;
+static AutoJob            jobs_buf[MAX_PROCS];
+static int                cycle_order[SCHED_MAX_TASKS];
+static int                cycle_n          = 0;
+static long               cycle_demand_ms  = 0;
+static unsigned long      sim_cycle        = 0;
+static unsigned long long total_met        = 0;
+static unsigned long long total_missed     = 0;
+static int                sim_running      = 1;
+static int                prev_cycle_missed = 0;
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -68,46 +74,45 @@ static const Process *find_process(int pid)
     return NULL;
 }
 
-/* Task EDF aktif (belum selesai) yang ditautkan ke PID ini, atau NULL. */
-static const SchedTask *sched_task_for_pid(int pid)
+/* Job simulasi milik PID ini pada siklus terakhir, atau NULL. */
+static const SchedTask *sim_job_for_pid(int pid)
 {
-    if (pid <= 0)
-        return NULL;
-    for (int i = 0; i < g_sched.task_count; i++) {
-        const SchedTask *t = &g_sched.tasks[i];
-        if (t->pid == pid && t->state != TASK_COMPLETED)
-            return t;
-    }
+    for (int i = 0; i < g_sched.task_count; i++)
+        if (g_sched.tasks[i].pid == pid)
+            return &g_sched.tasks[i];
     return NULL;
 }
 
-/* Majukan jam simulasi mengikuti waktu nyata: 1 ms nyata = 1 tick simulasi. */
-static void sched_advance(void)
+static void sim_clear(void)
 {
-    long long t = now_ms();
-    long long elapsed = t - sched_last_ms;
-    sched_last_ms = t;
-
-    if (!g_sched.active || elapsed <= 0)
-        return;
-    if (elapsed > MAX_ADVANCE_MS)
-        elapsed = MAX_ADVANCE_MS;
-    for (long long i = 0; i < elapsed; i++)
-        sched_tick(&g_sched);
+    sched_init(&g_sched);
+    cycle_n = 0;
+    cycle_demand_ms = 0;
 }
 
-/* Lepas tautan PID jika proses yang ditautkan sudah tidak ada. */
-static void unlink_dead_pids(void)
+/* Bangun dan jalankan satu siklus EDF dari data proses nyata. */
+static void sim_update(const Process *cur, int ncur, const Process *prev, int nprev)
 {
-    for (int i = 0; i < g_sched.task_count; i++) {
-        SchedTask *t = &g_sched.tasks[i];
-        if (t->pid > 0 && t->state != TASK_COMPLETED && !find_process(t->pid)) {
-            log_msg(LOG_INFO, LOG_SCHEDULER,
-                    "%s: linked process (PID %d) exited, task continues as pure simulation",
-                    t->name, t->pid);
-            t->pid = 0;
-        }
-    }
+    if (!sim_running)
+        return;
+
+    int nj = autosched_collect(cur, ncur, prev, nprev, jobs_buf, MAX_PROCS);
+    cycle_demand_ms = autosched_run(&g_sched, jobs_buf, nj);
+    cycle_n = autosched_order(&g_sched, cycle_order, SCHED_MAX_TASKS);
+    sim_cycle++;
+    total_met    += (unsigned long long)g_sched.met;
+    total_missed += (unsigned long long)g_sched.missed;
+
+    /* Catat ke log hanya saat keadaan berubah, bukan tiap siklus. */
+    int missed = (g_sched.missed > 0);
+    if (missed && !prev_cycle_missed)
+        log_msg(LOG_WARN, LOG_DEADLINE,
+                "EDF simulation: %d job(s) missed deadline (cycle #%lu, CPU demand %ld ms in a %d ms cycle)",
+                g_sched.missed, sim_cycle, cycle_demand_ms, AUTO_CYCLE_MS);
+    else if (!missed && prev_cycle_missed)
+        log_msg(LOG_INFO, LOG_SCHEDULER,
+                "EDF simulation: all deadlines met again (cycle #%lu)", sim_cycle);
+    prev_cycle_missed = missed;
 }
 
 static int state_init(void)
@@ -147,6 +152,7 @@ static void state_update(void)
     unsigned long long dt = (cs.total > last_cpu.total) ? cs.total - last_cpu.total : 0;
     monitor_apply_process_cpu(work, n, latest, n_latest, dt);
     monitor_log_changes(latest, n_latest, work, n);
+    sim_update(work, n, latest, n_latest);
 
     SystemStats st;
     if (monitor_read_system(&st) == 0) {
@@ -162,8 +168,6 @@ static void state_update(void)
     work   = tmp;
     n_latest = n;
     last_cpu = cs;
-
-    unlink_dead_pids();
 }
 
 /* ------------------------------------------------------------------ */
@@ -182,7 +186,7 @@ static int json_process_obj(StrBuf *b, const Process *p)
 {
     int rc = 0;
     char st = isalpha((unsigned char)p->state) ? p->state : '?';
-    const SchedTask *rt = sched_task_for_pid(p->pid);
+    const SchedTask *job = sim_job_for_pid(p->pid);
 
     rc |= sb_appendf(b, "{\"pid\":%d,\"ppid\":%d,\"name\":", p->pid, p->ppid);
     rc |= sb_append_json_str(b, p->name);
@@ -192,14 +196,14 @@ static int json_process_obj(StrBuf *b, const Process *p)
         st, process_state_name(p->state), p->cpu_usage,
         p->memory_kb, p->threads, p->priority, p->execution_time);
 
-    if (rt) {
-        /* Label simulasi: proses asli tidak diubah oleh scheduler kita. */
+    if (job) {
+        /* Deadline simulasi, BUKAN deadline Linux asli. */
         rc |= sb_appendf(b,
-            ",\"rtStatus\":\"EDF SIMULATION\",\"rtDeadlineInMs\":%ld,\"rtRemainingMs\":%ld}",
-            rt->deadline_ms - g_sched.now_ms, rt->remaining_ms);
+            ",\"rtStatus\":\"EDF SIMULATION\",\"rtExecMs\":%ld,\"rtDeadlineMs\":%ld}",
+            job->exec_ms, job->deadline_ms);
     } else {
         rc |= sb_appendf(b,
-            ",\"rtStatus\":\"NORMAL\",\"rtDeadlineInMs\":null,\"rtRemainingMs\":null}");
+            ",\"rtStatus\":\"NORMAL\",\"rtExecMs\":null,\"rtDeadlineMs\":null}");
     }
     return rc;
 }
@@ -281,85 +285,64 @@ static int handle_logs(const char *query, StrBuf *b)
 /* Scheduler                                                           */
 /* ------------------------------------------------------------------ */
 
-/* Tulis ,"<id_key>":N,"<name_key>":"..." atau keduanya null. */
-static int json_task_ref(StrBuf *b, const char *id_key, const char *name_key,
-                         const Scheduler *s, int id)
+/* Tulis ,"<key>":{"pid":N,"name":"..."} atau ,"<key>":null. */
+static int json_job_ref(StrBuf *b, const char *key, int id)
 {
     int rc = 0;
-    if (id < 0) {
-        rc |= sb_appendf(b, ",\"%s\":null,\"%s\":null", id_key, name_key);
-    } else {
-        rc |= sb_appendf(b, ",\"%s\":%d,\"%s\":", id_key, id, name_key);
-        rc |= sb_append_json_str(b, s->tasks[id].name);
-    }
+    if (id < 0)
+        return sb_appendf(b, ",\"%s\":null", key);
+
+    rc |= sb_appendf(b, ",\"%s\":{\"pid\":%d,\"name\":", key, g_sched.tasks[id].pid);
+    rc |= sb_append_json_str(b, g_sched.tasks[id].name);
+    rc |= sb_appendf(b, "}");
     return rc;
 }
 
 static int handle_scheduler(StrBuf *b)
 {
     const Scheduler *s = &g_sched;
-    int q[SCHED_MAX_TASKS];
-    int nq = sched_queue(s, q, SCHED_MAX_TASKS);
     int rc = 0;
-
-    /* "Next" = task pertama di antrean yang bukan task yang sedang berjalan. */
-    int next_id = -1;
-    for (int i = 0; i < nq; i++) {
-        if (q[i] != s->running_id) {
-            next_id = q[i];
-            break;
-        }
-    }
 
     rc |= sb_appendf(b,
         "{\"simulation\":true,\"algorithm\":\"EDF\",\"status\":\"%s\","
-        "\"clockMs\":%ld,\"met\":%d,\"missed\":%d",
-        s->active ? "RUNNING" : "STOPPED", s->now_ms, s->met, s->missed);
-    rc |= json_task_ref(b, "currentTaskId", "currentTask", s, s->running_id);
-    rc |= json_task_ref(b, "nextTaskId", "nextTask", s, next_id);
+        "\"cycle\":%lu,\"cycleMs\":%d,\"simulatedCores\":1,"
+        "\"jobCount\":%d,\"demandMs\":%ld,\"utilizationPercent\":%.1f,"
+        "\"met\":%d,\"missed\":%d,\"totalMet\":%llu,\"totalMissed\":%llu",
+        sim_running ? "RUNNING" : "STOPPED", sim_cycle, AUTO_CYCLE_MS,
+        s->task_count, cycle_demand_ms,
+        cycle_demand_ms * 100.0 / AUTO_CYCLE_MS,
+        s->met, s->missed, total_met, total_missed);
 
-    long nd = sched_next_deadline(s);
-    if (nd >= 0)
-        rc |= sb_appendf(b, ",\"nextDeadlineMs\":%ld,\"nextDeadlineInMs\":%ld",
-                         nd, nd - s->now_ms);
+    /* "Current" = job pertama yang di-dispatch EDF pada siklus ini, "next" = kedua. */
+    rc |= json_job_ref(b, "currentProcess", cycle_n > 0 ? cycle_order[0] : -1);
+    rc |= json_job_ref(b, "nextProcess", cycle_n > 1 ? cycle_order[1] : -1);
+
+    if (cycle_n > 0)
+        rc |= sb_appendf(b, ",\"nextDeadlineMs\":%ld", s->tasks[cycle_order[0]].deadline_ms);
     else
-        rc |= sb_appendf(b, ",\"nextDeadlineMs\":null,\"nextDeadlineInMs\":null");
+        rc |= sb_appendf(b, ",\"nextDeadlineMs\":null");
 
     rc |= sb_appendf(b, ",\"queue\":[");
-    for (int i = 0; i < nq; i++)
-        rc |= sb_appendf(b, i ? ",%d" : "%d", q[i]);
-
-    rc |= sb_appendf(b, "],\"tasks\":[");
-    for (int i = 0; i < s->task_count; i++) {
-        const SchedTask *t = &s->tasks[i];
+    for (int i = 0; i < cycle_n; i++) {
+        const SchedTask *t = &s->tasks[cycle_order[i]];
         if (i > 0)
             rc |= sb_appendf(b, ",");
-        rc |= sb_appendf(b, "{\"id\":%d,", t->id);
-        if (t->pid > 0)
-            rc |= sb_appendf(b, "\"pid\":%d,", t->pid);
-        else
-            rc |= sb_appendf(b, "\"pid\":null,");
-        rc |= sb_appendf(b, "\"name\":");
+        rc |= sb_appendf(b, "{\"pid\":%d,\"name\":", t->pid);
         rc |= sb_append_json_str(b, t->name);
-        rc |= sb_appendf(b,
-            ",\"state\":\"%s\",\"arrivalMs\":%ld,\"execMs\":%ld,"
-            "\"remainingMs\":%ld,\"deadlineMs\":%ld",
-            sched_state_name(t->state), t->arrival_ms, t->exec_ms,
-            t->remaining_ms, t->deadline_ms);
+        rc |= sb_appendf(b, ",\"execMs\":%ld,\"deadlineMs\":%ld,", t->exec_ms, t->deadline_ms);
         if (t->finish_ms >= 0)
-            rc |= sb_appendf(b, ",\"finishMs\":%ld", t->finish_ms);
+            rc |= sb_appendf(b, "\"finishMs\":%ld,", t->finish_ms);
         else
-            rc |= sb_appendf(b, ",\"finishMs\":null");
-        rc |= sb_appendf(b, ",\"missed\":%s}", t->missed ? "true" : "false");
+            rc |= sb_appendf(b, "\"finishMs\":null,");
+        rc |= sb_appendf(b, "\"missed\":%s}", t->missed ? "true" : "false");
     }
 
     rc |= sb_appendf(b, "],\"timeline\":[");
-    int first = (s->slice_count > TIMELINE_MAX) ? s->slice_count - TIMELINE_MAX : 0;
-    for (int i = first; i < s->slice_count; i++) {
+    for (int i = 0; i < s->slice_count; i++) {
         const SchedSlice *sl = &s->slices[i];
-        if (i > first)
+        if (i > 0)
             rc |= sb_appendf(b, ",");
-        rc |= sb_appendf(b, "{\"taskId\":%d,\"name\":", sl->task_id);
+        rc |= sb_appendf(b, "{\"pid\":%d,\"name\":", s->tasks[sl->task_id].pid);
         rc |= sb_append_json_str(b, s->tasks[sl->task_id].name);
         rc |= sb_appendf(b, ",\"startMs\":%ld,\"endMs\":%ld}", sl->start_ms, sl->end_ms);
     }
@@ -369,85 +352,31 @@ static int handle_scheduler(StrBuf *b)
 
 static int handle_sched_start(StrBuf *b)
 {
-    if (!g_sched.active) {
-        sched_last_ms = now_ms();
-        sched_start(&g_sched);
+    if (!sim_running) {
+        sim_running = 1;
+        prev_cycle_missed = 0;
+        log_msg(LOG_INFO, LOG_SCHEDULER, "EDF scheduler started");
     }
     return handle_scheduler(b);
 }
 
 static int handle_sched_stop(StrBuf *b)
 {
-    if (g_sched.active) {
-        sched_advance();            /* kejar waktu terakhir sebelum berhenti */
-        sched_stop(&g_sched);
+    if (sim_running) {
+        sim_running = 0;
+        sim_clear();                 /* semua proses kembali tampil NORMAL */
+        log_msg(LOG_INFO, LOG_SCHEDULER, "EDF scheduler stopped");
     }
     return handle_scheduler(b);
 }
 
 static int handle_sched_reset(StrBuf *b)
 {
-    sched_init(&g_sched);
-    sched_last_ms = now_ms();
-    log_msg(LOG_INFO, LOG_SCHEDULER, "scheduler reset");
-    return handle_scheduler(b);
-}
-
-/* Reset lalu muat 3 task contoh. Urutan EDF yang benar: B, C, A. */
-static int handle_sched_demo(StrBuf *b)
-{
-    sched_init(&g_sched);
-    sched_last_ms = now_ms();
-    sched_add_task(&g_sched, 0, "Task A", 0, 3000, 12000);
-    sched_add_task(&g_sched, 0, "Task B", 0, 2000, 6000);
-    sched_add_task(&g_sched, 0, "Task C", 0, 2500, 9000);
-    log_msg(LOG_INFO, LOG_SCHEDULER, "demo workload loaded (3 simulated tasks)");
-    return handle_scheduler(b);
-}
-
-static int handle_sched_add(const char *query, StrBuf *b)
-{
-    unsigned long exec_ms = 0, dl_ms = 0, pid_ul = 0;
-    char name[SCHED_NAME_MAX];
-    name[0] = '\0';
-
-    int have_pid  = (query_get_ulong(query, "pid", &pid_ul) == 0);
-    int have_name = (query_get_str(query, "name", name, sizeof(name)) == 0 &&
-                     name[0] != '\0');
-
-    if (query_get_ulong(query, "execMs", &exec_ms) != 0 ||
-        query_get_ulong(query, "deadlineMs", &dl_ms) != 0 ||
-        exec_ms < 1 || exec_ms > MAX_SIM_MS ||
-        dl_ms < 1 || dl_ms > MAX_SIM_MS)
-        return json_err(b, 400, "execMs and deadlineMs are required (1..3600000)");
-
-    if (!have_pid && !have_name)
-        return json_err(b, 400, "name or pid is required");
-
-    int pid = 0;
-    if (have_pid) {
-        if (pid_ul < 1 || pid_ul > MAX_PID_VALUE)
-            return json_err(b, 400, "invalid pid");
-        const Process *p = find_process((int)pid_ul);
-        if (!p)
-            return json_err(b, 404, "process not found");
-        if (sched_task_for_pid(p->pid))
-            return json_err(b, 409, "process already has an active EDF task");
-        pid = p->pid;
-        if (!have_name) {
-            strncpy(name, p->name, sizeof(name) - 1);
-            name[sizeof(name) - 1] = '\0';
-        }
-    }
-
-    int id = sched_add_task(&g_sched, pid, name, g_sched.now_ms,
-                            (long)exec_ms, (long)dl_ms);
-    if (id < 0)
-        return json_err(b, 409, "task limit reached");
-
-    log_msg(LOG_INFO, LOG_SCHEDULER,
-            "task added: %s (exec %lu ms, deadline %lu ms)%s",
-            name, exec_ms, dl_ms, pid > 0 ? ", linked to a Linux process" : "");
+    total_met = 0;
+    total_missed = 0;
+    sim_cycle = 0;
+    prev_cycle_missed = 0;
+    log_msg(LOG_INFO, LOG_SCHEDULER, "scheduler counters reset");
     return handle_scheduler(b);
 }
 
@@ -464,11 +393,9 @@ static int route(const char *method, const char *path, const char *query, StrBuf
     if (strncmp(path, "/api/scheduler/", 15) == 0) {
         if (!is_post)
             return json_err(body, 405, "use POST");
-        if (strcmp(path, "/api/scheduler/start") == 0)  return handle_sched_start(body);
-        if (strcmp(path, "/api/scheduler/stop") == 0)   return handle_sched_stop(body);
-        if (strcmp(path, "/api/scheduler/reset") == 0)  return handle_sched_reset(body);
-        if (strcmp(path, "/api/scheduler/demo") == 0)   return handle_sched_demo(body);
-        if (strcmp(path, "/api/scheduler/tasks") == 0)  return handle_sched_add(query, body);
+        if (strcmp(path, "/api/scheduler/start") == 0) return handle_sched_start(body);
+        if (strcmp(path, "/api/scheduler/stop") == 0)  return handle_sched_stop(body);
+        if (strcmp(path, "/api/scheduler/reset") == 0) return handle_sched_reset(body);
         return json_err(body, 404, "not found");
     }
 
@@ -691,10 +618,11 @@ int api_serve(int port)
         return -1;
     }
 
-    sched_init(&g_sched);
-    sched_last_ms = now_ms();
+    sim_clear();
 
     log_msg(LOG_INFO, LOG_SYSTEM, "API listening on http://127.0.0.1:%d", port);
+    log_msg(LOG_INFO, LOG_SCHEDULER,
+            "EDF scheduler started (automatic mode: jobs built from real process CPU usage)");
 
     long long next_tick = now_ms() + SAMPLE_MS;
     while (!g_stop) {
@@ -708,8 +636,6 @@ int api_serve(int port)
             log_msg(LOG_ERROR, LOG_SYSTEM, "poll() failed: %s", strerror(errno));
             break;
         }
-
-        sched_advance();                 /* jam simulasi mengikuti waktu nyata */
 
         if (pr > 0 && (pfd.revents & POLLIN)) {
             int cfd = accept(srv, NULL, NULL);

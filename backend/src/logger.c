@@ -8,6 +8,7 @@ static LogEntry      ring[LOG_CAPACITY];
 static unsigned long next_seq = 1;
 static FILE         *log_file = NULL;
 static int           echo_on  = 0;
+static int           muted    = 0;
 
 const char *log_level_name(LogLevel l)
 {
@@ -68,6 +69,7 @@ void log_close(void)
 }
 
 void log_set_echo(int on) { echo_on = on; }
+void log_set_muted(int on) { muted = on; }
 
 void log_reset(void)
 {
@@ -77,6 +79,8 @@ void log_reset(void)
 
 void log_msg(LogLevel level, LogCategory cat, const char *fmt, ...)
 {
+        if (muted)
+        return;
     LogEntry *e = &ring[(next_seq - 1) % LOG_CAPACITY];
 
     e->seq       = next_seq;

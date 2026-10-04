@@ -33,6 +33,9 @@ void log_close(void);
 /* 1 = cetak juga setiap log ke layar. */
 void log_set_echo(int on);
 
+/* 1 = abaikan semua log_msg sementara (dipakai saat simulasi internal). */
+void log_set_muted(int on);
+
 /* Kosongkan buffer dan reset nomor urut (dipakai oleh tes). */
 void log_reset(void);
 
