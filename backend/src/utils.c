@@ -125,3 +125,48 @@ int query_get_ulong(const char *query, const char *key, unsigned long *out)
     }
     return -1;
 }
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int query_get_str(const char *query, const char *key, char *out, size_t n)
+{
+    if (!query || !key || !out || n == 0)
+        return -1;
+
+    size_t klen = strlen(key);
+    const char *p = query;
+
+    while (*p) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            const char *v = p + klen + 1;
+            size_t o = 0;
+
+            while (*v && *v != '&' && o < n - 1) {
+                char c = *v;
+                if (c == '+') {
+                    c = ' ';
+                } else if (c == '%' && hexval(v[1]) >= 0 && hexval(v[2]) >= 0) {
+                    c = (char)(hexval(v[1]) * 16 + hexval(v[2]));
+                    v += 2;
+                }
+                if ((unsigned char)c < 0x20 || c == 0x7f)
+                    c = '?';
+                out[o++] = c;
+                v++;
+            }
+            out[o] = '\0';
+            return 0;
+        }
+        const char *amp = strchr(p, '&');
+        if (!amp)
+            break;
+        p = amp + 1;
+    }
+    return -1;
+}

@@ -23,6 +23,8 @@ int main(void)
 {
     StrBuf sb;
     unsigned long v = 0;
+    char name[32];
+    char small[4];
 
     sb_init(&sb);
     sb_appendf(&sb, "x=%d", 42);
@@ -57,6 +59,21 @@ int main(void)
           query_get_ulong("since=abc", "since", &v) == -1);
     CHECK("TC-UTL-07e query NULL ditolak",
           query_get_ulong(NULL, "since", &v) == -1);
+
+    CHECK("TC-UTL-08a '+' menjadi spasi",
+          query_get_str("name=Task+A&x=1", "name", name, sizeof(name)) == 0 &&
+          strcmp(name, "Task A") == 0);
+    CHECK("TC-UTL-08b %20 di-decode",
+          query_get_str("name=Firefox%20Test", "name", name, sizeof(name)) == 0 &&
+          strcmp(name, "Firefox Test") == 0);
+    CHECK("TC-UTL-08c %00 diganti '?'",
+          query_get_str("name=a%00b", "name", name, sizeof(name)) == 0 &&
+          strcmp(name, "a?b") == 0);
+    CHECK("TC-UTL-08d key tidak ada",
+          query_get_str("x=1", "name", name, sizeof(name)) == -1);
+    CHECK("TC-UTL-08e dipotong sesuai ukuran buffer",
+          query_get_str("name=abcdefgh", "name", small, sizeof(small)) == 0 &&
+          strcmp(small, "abc") == 0);
 
     printf("\nHasil: %d tes gagal\n", failures);
     return failures ? 1 : 0;

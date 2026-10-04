@@ -25,4 +25,9 @@ int sb_append_json_str(StrBuf *sb, const char *s);
    Return 0 jika key ditemukan dan nilainya angka valid, selain itu -1. */
 int query_get_ulong(const char *query, const char *key, unsigned long *out);
 
+/* Baca parameter teks dari query string dengan decoding %XX dan '+'.
+   Karakter kontrol diganti '?'. Hasil dipotong agar muat di out (n byte
+   termasuk '\0'). Return 0 jika key ditemukan (hasil bisa kosong), selain itu -1. */
+int query_get_str(const char *query, const char *key, char *out, size_t n);
+
 #endif
