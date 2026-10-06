@@ -6,7 +6,7 @@ export default function PagePlaceholder({ name }) {
       <div className="rounded-xl border border-border bg-card p-6">
         <p className="font-mono text-sm text-primary">{name}</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Isi halaman ini dibangun pada tahap berikutnya di Phase 9.
+            gimana nanti, hanya allah yang tau
         </p>
       </div>
 
