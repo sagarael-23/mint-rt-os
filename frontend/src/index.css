@@ -129,3 +129,44 @@
     }
 }
 
+cat >> src/index.css << 'EOF'
+
+/* ===== Tema terang (Phase 9g) ===== */
+html.light {
+  --background: #f4f6fa;
+  --foreground: #151821;
+  --card: #ffffff;
+  --card-foreground: #151821;
+  --popover: #ffffff;
+  --popover-foreground: #151821;
+  --primary: #2e7d32;
+  --primary-foreground: #ffffff;
+  --secondary: #e9edf4;
+  --secondary-foreground: #151821;
+  --muted: #e9edf4;
+  --muted-foreground: #5b6477;
+  --accent: #e9edf4;
+  --accent-foreground: #151821;
+  --destructive: #c62828;
+  --border: #dde2ec;
+  --input: #cfd6e3;
+  --ring: #2e7d32;
+  --chart-1: #2e7d32;
+  --chart-2: #0277bd;
+  --chart-3: #b26a00;
+  --chart-4: #c62828;
+  --chart-5: #6a3fc4;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #4a5365;
+  --sidebar-primary: #2e7d32;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(46 125 50 / 0.1);
+  --sidebar-accent-foreground: #2e7d32;
+  --sidebar-border: #e3e7ef;
+  --sidebar-ring: #2e7d32;
+  --success: #2e7d32;
+  --warning: #b26a00;
+  --danger: #c62828;
+}
+EOF
+tail -n 4 src/index.css

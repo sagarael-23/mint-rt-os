@@ -4,7 +4,11 @@ import { cn } from "@/lib/utils"
 export default function Sidebar({ route }) {
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex h-16 items-center gap-3 px-5">
+      <a
+        href="#/landing"
+        title="Landing"
+        className="flex h-16 items-center gap-3 px-5"
+      >
         <div
           className="size-8 shrink-0 rounded-full"
           style={{
@@ -15,7 +19,7 @@ export default function Sidebar({ route }) {
           <div className="text-sm font-semibold text-foreground">MintRT OS</div>
           <div className="text-xs text-muted-foreground">Real-Time System</div>
         </div>
-      </div>
+      </a>
 
       <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => (

@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test src/lib/process.test.js src/lib/schedule.test.js"
+    "test": "node --test src/lib/process.test.js src/lib/schedule.test.js src/lib/series.test.js src/lib/logs.test.js src/lib/settings.test.js src/services/api.test.js"
   },
   "dependencies": {
     "@fontsource-variable/figtree": "^5.3.0",

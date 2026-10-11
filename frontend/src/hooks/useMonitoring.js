@@ -1,7 +1,11 @@
-import { MOCK_MONITORING } from "@/services/mock"
+import { useApi } from "@/hooks/useApi"
+import { EMPTY_MONITORING } from "@/services/empty"
 
-// Tahap 9: data contoh dengan bentuk yang sama dengan GET /api/monitoring.
-// Phase 10 mengganti isi hook ini dengan data nyata dari backend.
-export function useMonitoring() {
-  return { data: MOCK_MONITORING, isMock: true }
+// Data nyata dari GET /api/monitoring (riwayat 120 siklus dari backend).
+export function useMonitoring({ autoRefresh = false, intervalMs } = {}) {
+  const { data, updatedAt, refresh } = useApi("/api/monitoring", {
+    autoRefresh,
+    intervalMs,
+  })
+  return { data: data ?? EMPTY_MONITORING, isMock: false, refresh, updatedAt }
 }

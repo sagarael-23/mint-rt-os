@@ -4,9 +4,10 @@ import "@fontsource-variable/inter"
 import "@fontsource-variable/jetbrains-mono"
 import "./index.css"
 import App from "./App.jsx"
+import { initTheme } from "@/hooks/useSettings"
 
-// Desain hanya punya mode gelap.
-document.documentElement.classList.add("dark")
+// Terapkan tema tersimpan sebelum render pertama agar tidak berkedip.
+initTheme()
 document.title = "MINT RT OS"
 
 createRoot(document.getElementById("root")).render(

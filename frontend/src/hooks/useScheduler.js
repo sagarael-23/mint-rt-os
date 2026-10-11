@@ -1,35 +1,42 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback } from "react"
 
-import {
-  INITIAL_SCHEDULER,
-  nextMockCycle,
-  resetMock,
-  startMock,
-  stopMock,
-} from "@/services/mockScheduler"
+import { useApi } from "@/hooks/useApi"
+import { reportFail, reportOk } from "@/hooks/useBackendStatus"
+import { postJson } from "@/services/api"
+import { EMPTY_SCHEDULER } from "@/services/empty"
 
-// Tahap 9: data contoh dengan bentuk yang sama dengan GET /api/scheduler.
-// Phase 10 mengganti isinya dengan fetch dan POST /api/scheduler/start|stop|reset;
-// bentuk nilai kembaliannya tetap sama sehingga halaman tidak perlu diubah.
-export function useScheduler({ autoRefresh = false, intervalMs = 1000 } = {}) {
-  const [data, setData] = useState(INITIAL_SCHEDULER)
-  const [updatedAt, setUpdatedAt] = useState(() => new Date())
+// Data nyata dari GET /api/scheduler. Start, Stop, dan Reset memanggil
+// POST /api/scheduler/start|stop|reset; jawabannya berisi status terbaru.
+export function useScheduler({ autoRefresh = false, intervalMs } = {}) {
+  const { data, updatedAt, refresh, setData } = useApi("/api/scheduler", {
+    autoRefresh,
+    intervalMs,
+  })
 
-  const apply = useCallback((updater) => {
-    setData(updater)
-    setUpdatedAt(new Date())
-  }, [])
+  const act = useCallback(
+    async (action) => {
+      try {
+        const body = await postJson(`/api/scheduler/${action}`)
+        reportOk()
+        setData(body)
+      } catch (error) {
+        reportFail(error)
+      }
+    },
+    [setData]
+  )
 
-  const advance = useCallback(() => apply(nextMockCycle), [apply])
-  const start = useCallback(() => apply(startMock), [apply])
-  const stop = useCallback(() => apply(stopMock), [apply])
-  const reset = useCallback(() => apply(resetMock), [apply])
+  const start = useCallback(() => act("start"), [act])
+  const stop = useCallback(() => act("stop"), [act])
+  const reset = useCallback(() => act("reset"), [act])
 
-  useEffect(() => {
-    if (!autoRefresh) return undefined
-    const timer = setInterval(advance, intervalMs)
-    return () => clearInterval(timer)
-  }, [autoRefresh, intervalMs, advance])
-
-  return { data, isMock: true, start, stop, reset, updatedAt }
+  return {
+    data: data ?? EMPTY_SCHEDULER,
+    isMock: false,
+    refresh,
+    start,
+    stop,
+    reset,
+    updatedAt,
+  }
 }
