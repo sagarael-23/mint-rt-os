@@ -1,24 +1,33 @@
+import { useState } from "react"
 import { CircleAlert, CircleCheck, Cpu, Layers } from "lucide-react"
 
 import CpuChart from "@/components/dashboard/CpuChart"
+import RecentActivity from "@/components/dashboard/RecentActivity"
 import RecentProcesses from "@/components/dashboard/RecentProcesses"
 import SchedulerStatus from "@/components/dashboard/SchedulerStatus"
 import StatCard from "@/components/dashboard/StatCard"
-import MockNotice from "@/components/layout/MockNotice"
+import LiveToggle from "@/components/layout/LiveToggle"
 import { useMonitoring } from "@/hooks/useMonitoring"
 import { useProcesses } from "@/hooks/useProcesses"
 import { useScheduler } from "@/hooks/useScheduler"
+import { getLiveDefault } from "@/hooks/useSettings"
 import { formatPercent } from "@/lib/format"
 
 export default function Dashboard() {
-  const { data: monitoring, isMock } = useMonitoring()
-  const { data: scheduler } = useScheduler()
-  const { data: processes } = useProcesses()
+  const [live, setLive] = useState(getLiveDefault)
+  const { data: monitoring, updatedAt } = useMonitoring({ autoRefresh: live })
+  const { data: scheduler } = useScheduler({ autoRefresh: live })
+  const { data: processes } = useProcesses({ autoRefresh: live })
   const cur = monitoring.current
 
   return (
     <div className="space-y-6">
-      {isMock && <MockNotice />}
+      <div className="flex items-center justify-end gap-3">
+        <span className="font-mono text-xs text-muted-foreground">
+          Updated {updatedAt.toLocaleTimeString("id-ID", { hour12: false })}
+        </span>
+        <LiveToggle live={live} onChange={setLive} />
+      </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
@@ -56,7 +65,12 @@ export default function Dashboard() {
         <SchedulerStatus scheduler={scheduler} />
       </div>
 
-      <RecentProcesses processes={processes.processes} />
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <RecentProcesses processes={processes.processes} />
+        </div>
+        <RecentActivity />
+      </div>
     </div>
   )
 }

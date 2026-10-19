@@ -1,4 +1,9 @@
-export const DEFAULT_SETTINGS = { theme: "dark", refreshMs: 1000 }
+export const DEFAULT_SETTINGS = {
+  theme: "dark",
+  refreshMs: 1000,
+  liveDefault: true,
+  notifications: true,
+}
 export const THEMES = ["dark", "light"]
 export const REFRESH_OPTIONS = [1000, 2000, 5000]
 
@@ -9,6 +14,8 @@ export function sanitize(raw) {
   if (raw && typeof raw === "object") {
     if (THEMES.includes(raw.theme)) out.theme = raw.theme
     if (REFRESH_OPTIONS.includes(raw.refreshMs)) out.refreshMs = raw.refreshMs
+    if (typeof raw.liveDefault === "boolean") out.liveDefault = raw.liveDefault
+    if (typeof raw.notifications === "boolean") out.notifications = raw.notifications
   }
   return out
 }

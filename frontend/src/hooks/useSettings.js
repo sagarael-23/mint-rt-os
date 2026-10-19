@@ -26,6 +26,16 @@ export function initTheme() {
   applyTheme(current.theme)
 }
 
+// Pembacaan sesaat di luar komponen (mis. di dalam callback asinkron).
+export function getSettings() {
+  return current
+}
+
+// Nilai awal tombol Live pada tiap halaman.
+export function getLiveDefault() {
+  return current.liveDefault
+}
+
 export function updateSettings(patch) {
   current = sanitize({ ...current, ...patch })
   try {

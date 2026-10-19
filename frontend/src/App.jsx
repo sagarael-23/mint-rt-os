@@ -1,6 +1,8 @@
 import BackendBanner from "@/components/layout/BackendBanner"
 import Sidebar from "@/components/layout/Sidebar"
+import ToastHost from "@/components/layout/ToastHost"
 import Topbar from "@/components/layout/Topbar"
+import { useEventWatcher } from "@/hooks/useEventWatcher"
 import { useHashRoute } from "@/hooks/useHashRoute"
 import { NAV_ITEMS } from "@/lib/nav"
 import Dashboard from "@/pages/Dashboard"
@@ -24,9 +26,17 @@ const PAGES = {
 
 export default function App() {
   const route = useHashRoute()
+  useEventWatcher() // pengawas log global: Recent Activity dan notifikasi
 
   // Layar pembuka tanpa sidebar dan topbar.
-  if (route === "landing") return <Landing />
+  if (route === "landing") {
+    return (
+      <>
+        <Landing />
+        <ToastHost />
+      </>
+    )
+  }
 
   // Hash yang tidak dikenal jatuh ke Dashboard.
   const active = NAV_ITEMS.find((item) => item.id === route) ?? NAV_ITEMS[0]
@@ -42,6 +52,7 @@ export default function App() {
           <Page />
         </main>
       </div>
+      <ToastHost />
     </div>
   )
 }

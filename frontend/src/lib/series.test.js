@@ -1,32 +1,68 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { appendSample, seriesStats, windowTotals } from "./series.js"
+import {
+  DEFAULT_SETTINGS,
+  parseSettings,
+  sanitize,
+  validateCycleMs,
+} from "./settings.js"
 
-test("TC-FE-SER-01 statistik deret", () => {
-  assert.deepEqual(seriesStats([10, 20, 60]), { min: 10, max: 60, avg: 30, last: 60 })
-  assert.deepEqual(seriesStats([]), { min: 0, max: 0, avg: 0, last: 0 })
+test("TC-FE-SET-01 sanitize: nilai tidak valid jatuh ke bawaan", () => {
+  assert.deepEqual(sanitize(null), DEFAULT_SETTINGS)
+  assert.deepEqual(sanitize("teks"), DEFAULT_SETTINGS)
+  assert.deepEqual(sanitize({ theme: "ungu", refreshMs: 3000 }), DEFAULT_SETTINGS)
 })
 
-test("TC-FE-SER-02 total jendela dan persentase performa", () => {
-  const samples = [
-    { met: 9, missed: 0 },
-    { met: 7, missed: 2 },
-    { met: 8, missed: 0 },
-  ]
-  assert.deepEqual(windowTotals(samples), { met: 24, missed: 2, percent: 92.3 })
-  assert.deepEqual(windowTotals([{ met: 5, missed: 0 }]), { met: 5, missed: 0, percent: 100 })
-  assert.deepEqual(windowTotals([]), { met: 0, missed: 0, percent: null })
+test("TC-FE-SET-02 sanitize: nilai valid dipertahankan, kunci asing dibuang", () => {
+  assert.deepEqual(sanitize({ theme: "light", refreshMs: 5000, lain: 1 }), {
+    theme: "light",
+    refreshMs: 5000,
+    liveDefault: true,
+    notifications: true,
+  })
+  assert.deepEqual(sanitize({ theme: "light" }), {
+    theme: "light",
+    refreshMs: 1000,
+    liveDefault: true,
+    notifications: true,
+  })
 })
 
-test("TC-FE-SER-03 appendSample menjaga kapasitas tanpa mengubah masukan", () => {
-  const input = [1, 2, 3]
-  const out = appendSample(input, 4, 3)
-  assert.deepEqual(out, [2, 3, 4])
-  assert.deepEqual(input, [1, 2, 3])
-  assert.deepEqual(appendSample([1], 2, 3), [1, 2])
+test("TC-FE-SET-03 parseSettings: JSON rusak atau kosong", () => {
+  assert.deepEqual(parseSettings("{rusak"), DEFAULT_SETTINGS)
+  assert.deepEqual(parseSettings(null), DEFAULT_SETTINGS)
+  assert.deepEqual(parseSettings('{"theme":"light","refreshMs":2000}'), {
+    theme: "light",
+    refreshMs: 2000,
+    liveDefault: true,
+    notifications: true,
+  })
 })
 
-test("TC-FE-SER-04 persentase dibulatkan satu desimal", () => {
-  assert.equal(windowTotals([{ met: 2, missed: 1 }]).percent, 66.7)
+test("TC-FE-SET-04 validateCycleMs: nilai valid", () => {
+  assert.deepEqual(validateCycleMs("1000"), { ok: true, value: 1000 })
+  assert.deepEqual(validateCycleMs(" 2000 "), { ok: true, value: 2000 })
+  assert.deepEqual(validateCycleMs("500"), { ok: true, value: 500 })
+  assert.deepEqual(validateCycleMs("5000"), { ok: true, value: 5000 })
+})
+
+test("TC-FE-SET-05 validateCycleMs: nilai tidak valid", () => {
+  const range = { ok: false, error: "cycleMs must be between 500 and 5000" }
+  const whole = { ok: false, error: "cycleMs must be a whole number" }
+  assert.deepEqual(validateCycleMs("499"), range)
+  assert.deepEqual(validateCycleMs("5001"), range)
+  for (const bad of ["abc", "", "1500.5", "-100", "12e2", null]) {
+    assert.deepEqual(validateCycleMs(bad), whole)
+  }
+})
+
+test("TC-FE-SET-06 sanitize: pengaturan boolean", () => {
+  assert.deepEqual(sanitize({ liveDefault: false, notifications: false }), {
+    theme: "dark",
+    refreshMs: 1000,
+    liveDefault: false,
+    notifications: false,
+  })
+  assert.deepEqual(sanitize({ liveDefault: "ya", notifications: 1 }), DEFAULT_SETTINGS)
 })
