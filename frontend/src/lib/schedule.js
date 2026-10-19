@@ -52,3 +52,49 @@ export function buildSchedule(jobs, cycleMs) {
 
   return { queue, timeline, met, missed, demandMs: clock }
 }
+
+// Pembulatan ke atas ke angka "rapi" untuk sumbu: kelipatan 10 sampai 100,
+// kelipatan 50 sampai 500, selebihnya kelipatan 100.
+export function niceCeil(x) {
+  const step = x <= 100 ? 10 : x <= 500 ? 50 : 100
+  return Math.ceil(x / step) * step
+}
+
+// Panjang sumbu timeline (ms).
+// "cycle": paling sedikit sepanjang siklus, sehingga bagian kosong terlihat.
+// "fit": hanya sepanjang pekerjaan (dibulatkan), sehingga batang lebih lebar.
+// Pada kedua mode, sumbu cukup panjang untuk memuat semua batang.
+export function axisSpan(queue, timeline, cycleMs, mode = "cycle") {
+  const maxEnd = Math.max(0, ...timeline.map((s) => s.endMs))
+  if (mode === "fit") return niceCeil(Math.max(maxEnd, 1))
+  const maxDeadline = Math.max(0, ...queue.map((j) => j.deadlineMs))
+  return Math.max(cycleMs, maxEnd, maxDeadline)
+}
+
+// Sisa waktu sebelum deadline (negatif jika terlambat); null jika belum selesai.
+export function slackMs(job) {
+  return job.finishMs == null ? null : job.deadlineMs - job.finishMs
+}
+
+export function slackLabel(job) {
+  const slack = slackMs(job)
+  if (slack == null) return "—"
+  return `${slack >= 0 ? "+" : "−"}${Math.abs(slack)} ms`
+}
+
+// Menghitung ulang deadline sebuah job dari rumusnya, untuk dibandingkan
+// dengan nilai dari backend.
+export function explainDeadline(job, jobCount, cycleMs) {
+  const jobs = Math.max(1, jobCount)
+  const raw = job.execMs * jobs
+  const cap = Math.max(job.execMs, cycleMs)
+  const computed = Math.min(raw, cap)
+  return {
+    jobs,
+    raw,
+    cap,
+    capped: raw > cap,
+    computed,
+    matches: computed === job.deadlineMs,
+  }
+}
