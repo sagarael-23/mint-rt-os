@@ -136,8 +136,17 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-        if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
-        int port = (argc > 2) ? atoi(argv[2]) : API_DEFAULT_PORT;
+    /* --serve [port] [--static <folder>] */
+    if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
+        int port = API_DEFAULT_PORT;
+        const char *static_dir = NULL;
+
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--static") == 0 && i + 1 < argc)
+                static_dir = argv[++i];
+            else
+                port = atoi(argv[i]);
+        }
         if (port < 1024 || port > 65535) {
             fprintf(stderr, "Port harus antara 1024 dan 65535\n");
             return 1;
@@ -147,7 +156,7 @@ int main(int argc, char *argv[])
         log_set_echo(1);
         log_msg(LOG_INFO, LOG_SYSTEM, "backend started (API mode)");
 
-        int rc = api_serve(port);
+        int rc = api_serve(port, static_dir);
         log_close();
         return rc == 0 ? 0 : 1;
     }

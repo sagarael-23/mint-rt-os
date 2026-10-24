@@ -1,0 +1,13 @@
+[Unit]
+Description=MINT RT OS backend (C) and frontend server
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/.local/state/mint-rt-os
+WorkingDirectory=%h/.local/state/mint-rt-os
+ExecStart=@ROOT@/backend/mint-rt-backend --serve 8080 --static @ROOT@/frontend/dist
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

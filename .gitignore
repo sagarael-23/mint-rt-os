@@ -18,3 +18,4 @@ backend/test_logger
 backend/test_utils
 backend/test_autosched
 backend/test_history
+backend/test_static

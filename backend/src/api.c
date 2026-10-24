@@ -7,6 +7,7 @@
 #include "process.h"
 #include "scheduler.h"
 #include "utils.h"
+#include "static_files.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -59,6 +60,7 @@ static unsigned long long total_missed      = 0;
 static int                sim_running       = 1;
 static int                prev_cycle_missed = 0;
 
+static const char *g_static_root = NULL;   /* folder frontend hasil build, atau NULL */
 static volatile sig_atomic_t g_stop = 0;
 
 static void on_signal(int sig)
@@ -707,6 +709,12 @@ static void handle_client(int fd)
     if (query)
         *query++ = '\0';
 
+            /* Berkas statis (frontend hasil build): hanya GET di luar /api/. */
+    if (g_static_root && !is_post && strncmp(target, "/api/", 5) != 0) {
+        static_serve(fd, g_static_root, target);
+        return;
+    }
+
     StrBuf body;
     sb_init(&body);
     int status = route(method, target, query, &body);
@@ -719,11 +727,10 @@ static void handle_client(int fd)
     sb_free(&body);
 }
 
-/* ------------------------------------------------------------------ */
-/* Loop utama                                                          */
-/* ------------------------------------------------------------------ */
+#define MAX_CONNS 32
+#define IDLE_MS   5000
 
-int api_serve(int port)
+int api_serve(int port, const char *static_root)
 {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -731,6 +738,12 @@ int api_serve(int port)
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+
+    if (static_root && static_root_valid(static_root) != 0) {
+        log_msg(LOG_ERROR, LOG_SYSTEM,
+                "static folder is not valid (needs index.html): %s", static_root);
+        return -1;
+    }
 
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) {
@@ -747,7 +760,7 @@ int api_serve(int port)
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);      /* hanya 127.0.0.1 */
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-        listen(srv, 8) != 0) {
+        listen(srv, 16) != 0) {
         log_msg(LOG_ERROR, LOG_SYSTEM, "cannot listen on port %d: %s",
                 port, strerror(errno));
         close(srv);
@@ -760,10 +773,17 @@ int api_serve(int port)
 
     sim_clear();
     history_reset();
+    g_static_root = static_root;
 
     log_msg(LOG_INFO, LOG_SYSTEM, "API listening on http://127.0.0.1:%d", port);
+    if (static_root)
+        log_msg(LOG_INFO, LOG_SYSTEM, "serving frontend from %s", static_root);
     log_msg(LOG_INFO, LOG_SCHEDULER,
             "EDF scheduler started (automatic mode: jobs built from real process CPU usage)");
+
+    int       conns[MAX_CONNS];
+    long long born[MAX_CONNS];
+    int       nconn = 0;
 
     long long next_tick = now_ms() + g_cycle_ms;
     while (!g_stop) {
@@ -771,18 +791,50 @@ int api_serve(int port)
         if (wait < 0)
             wait = 0;
 
-        struct pollfd pfd = { srv, POLLIN, 0 };
-        int pr = poll(&pfd, 1, (int)wait);
+        struct pollfd pfds[1 + MAX_CONNS];
+        pfds[0].fd      = srv;
+        pfds[0].events  = POLLIN;
+        pfds[0].revents = 0;
+        for (int i = 0; i < nconn; i++) {
+            pfds[1 + i].fd      = conns[i];
+            pfds[1 + i].events  = POLLIN;
+            pfds[1 + i].revents = 0;
+        }
+
+        int pr = poll(pfds, (nfds_t)(1 + nconn), (int)wait);
         if (pr < 0 && errno != EINTR) {
             log_msg(LOG_ERROR, LOG_SYSTEM, "poll() failed: %s", strerror(errno));
             break;
         }
 
-        if (pr > 0 && (pfd.revents & POLLIN)) {
+        long long now = now_ms();
+
+        /* Sambungan yang sudah ada: layani yang sudah mengirim data, tutup yang
+           menganggur terlalu lama (mis. sambungan spekulatif milik browser).
+           Sambungan menganggur tidak lagi menghambat sambungan lain. */
+        for (int i = nconn - 1; i >= 0; i--) {
+            short ev = pfds[1 + i].revents;
+            if (ev & (POLLIN | POLLHUP | POLLERR)) {
+                handle_client(conns[i]);
+            } else if (now - born[i] <= IDLE_MS) {
+                continue;
+            }
+            close(conns[i]);
+            conns[i] = conns[nconn - 1];
+            born[i]  = born[nconn - 1];
+            nconn--;
+        }
+
+        if (pfds[0].revents & POLLIN) {
             int cfd = accept(srv, NULL, NULL);
             if (cfd >= 0) {
-                handle_client(cfd);
-                close(cfd);
+                if (nconn < MAX_CONNS) {
+                    conns[nconn] = cfd;
+                    born[nconn]  = now;
+                    nconn++;
+                } else {
+                    close(cfd);
+                }
             }
         }
 
@@ -799,6 +851,8 @@ int api_serve(int port)
         }
     }
 
+    for (int i = 0; i < nconn; i++)
+        close(conns[i]);
     close(srv);
     log_msg(LOG_INFO, LOG_SYSTEM, "API stopped");
     return 0;
